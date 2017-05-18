@@ -3388,7 +3388,7 @@ OMX_ERRORTYPE omx_vdec::get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVEL
 
     if (profileLevelType->nPortIndex == 0) {
         if (!strncmp(drv_ctx.kind, "OMX.qcom.video.decoder.avc",OMX_MAX_STRINGNAME_SIZE)) {
-            profileLevelType->eLevel = OMX_VIDEO_AVCLevel52;
+            profileLevelType->eLevel = OMX_VIDEO_AVCLevel51;
             if (profileLevelType->nProfileIndex == 0) {
                 profileLevelType->eProfile = OMX_VIDEO_AVCProfileBaseline;
             } else if (profileLevelType->nProfileIndex == 1) {
@@ -3419,6 +3419,9 @@ OMX_ERRORTYPE omx_vdec::get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVEL
                 profileLevelType->eLevel   = OMX_VIDEO_HEVCMainTierLevel51;
             } else if (profileLevelType->nProfileIndex == 1) {
                 profileLevelType->eProfile = OMX_VIDEO_HEVCProfileMain10;
+                profileLevelType->eLevel   = OMX_VIDEO_HEVCMainTierLevel51;
+            } else if (profileLevelType->nProfileIndex == 2) {
+                profileLevelType->eProfile = OMX_VIDEO_HEVCProfileMain10HDR10;
                 profileLevelType->eLevel   = OMX_VIDEO_HEVCMainTierLevel51;
             } else {
                 DEBUG_PRINT_LOW("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %u",
@@ -8594,40 +8597,15 @@ int omx_vdec::async_message_process (void *context, void* message)
                            !omx->output_flush_progress &&
                            !(v4l2_buf_ptr->flags & V4L2_QCOM_BUF_FLAG_DECODEONLY) &&
                            !(v4l2_buf_ptr->flags & V4L2_QCOM_BUF_FLAG_EOS)) {
-                       unsigned int index = v4l2_buf_ptr->index;
-                       unsigned int extra_idx = EXTRADATA_IDX(omx->drv_ctx.num_planes);
                        omx->time_stamp_dts.remove_time_stamp(
                                omxhdr->nTimeStamp,
                                (omx->drv_ctx.interlace != VDEC_InterlaceFrameProgressive)
                                ?true:false);
-                       plane[0].bytesused = 0;
-                       plane[0].m.userptr =
-                           (unsigned long)omx->drv_ctx.ptr_outputbuffer[index].bufferaddr -
-                           (unsigned long)omx->drv_ctx.ptr_outputbuffer[index].offset;
-                       plane[0].reserved[0] = omx->drv_ctx.ptr_outputbuffer[index].pmem_fd;
-                       plane[0].reserved[1] = omx->drv_ctx.ptr_outputbuffer[index].offset;
-                       plane[0].data_offset = 0;
-                       v4l2_buf_ptr->flags = 0x0;
-                       if (extra_idx && (extra_idx < VIDEO_MAX_PLANES)) {
-                           plane[extra_idx].bytesused = 0;
-                           plane[extra_idx].length = omx->drv_ctx.extradata_info.buffer_size;
-                           plane[extra_idx].m.userptr = (long unsigned int) (omx->drv_ctx.extradata_info.uaddr + index * omx->drv_ctx.extradata_info.buffer_size);
-#ifdef USE_ION
-                           plane[extra_idx].reserved[0] = omx->drv_ctx.extradata_info.ion.fd_ion_data.fd;
-#endif
-                           plane[extra_idx].reserved[1] = v4l2_buf_ptr->index * omx->drv_ctx.extradata_info.buffer_size;
-                           plane[extra_idx].data_offset = 0;
-                       } else if (extra_idx >= VIDEO_MAX_PLANES) {
-                           DEBUG_PRINT_ERROR("Extradata index higher than expected: %u", extra_idx);
-                           return -1;
-                       }
 
-                       DEBUG_PRINT_LOW("SENDING FTB TO F/W from async_message_process - fd[0] = %d fd[1] = %d offset[1] = %d in_flush = %d",
-                               plane[0].reserved[0],plane[extra_idx].reserved[0], plane[extra_idx].reserved[1], omx->output_flush_progress);
-                       if(ioctl(omx->drv_ctx.video_driver_fd, VIDIOC_QBUF, v4l2_buf_ptr)) {
-                            DEBUG_PRINT_ERROR("Failed to queue buffer back to driver: %d, %d, %d", v4l2_buf_ptr->length, v4l2_buf_ptr->m.planes[0].reserved[0], v4l2_buf_ptr->m.planes[1].reserved[0]);
-                            return -1;
-                       }
+                       omxhdr->nFilledLen = 0;
+                       omx->pending_output_buffers--;
+                       omx->post_event ((unsigned long)NULL,(unsigned long)omx->client_buffers.get_il_buf_hdr(omxhdr),
+                               OMX_COMPONENT_GENERATE_FTB);
                        break;
                    }
                    if (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_DATA_CORRUPT) {
@@ -8718,11 +8696,6 @@ int omx_vdec::async_message_process (void *context, void* message)
                    vdec_msg->msgdata.output_frame.bufferaddr =
                        omx->drv_ctx.ptr_outputbuffer[v4l2_buf_ptr->index].bufferaddr;
 
-                   if (vdec_msg->msgdata.output_frame.len)
-                       memcpy(&omx->drv_ctx.frame_size,
-                               &vdec_msg->msgdata.output_frame.framesize,
-                               sizeof(struct vdec_framesize));
-
                    DEBUG_PRINT_LOW("[RespBufDone] Fd(%d) Buf(%p) Ts(%lld) PicType(%u) Flags (0x%x)"
                            " FillLen(%u) Crop: L(%u) T(%u) R(%u) B(%u)",
                            omx->drv_ctx.ptr_outputbuffer[v4l2_buf_ptr->index].pmem_fd,
@@ -8758,6 +8731,10 @@ int omx_vdec::async_message_process (void *context, void* message)
                                vdec_msg->msgdata.output_frame.framesize.top,
                                vdec_msg->msgdata.output_frame.framesize.right,
                                vdec_msg->msgdata.output_frame.framesize.bottom);
+
+                       memcpy(&omx->drv_ctx.frame_size,
+                               &vdec_msg->msgdata.output_frame.framesize,
+                               sizeof(struct vdec_framesize));
 
                        omx->drv_ctx.video_resolution.frame_width =
                                vdec_msg->msgdata.output_frame.picsize.frame_width;
@@ -12271,10 +12248,12 @@ void omx_vdec::buf_ref_remove()
                         out_dynamic_list[i].mapped_size);
         }
 
-         DEBUG_PRINT_LOW("buf_ref_remove: [REMOVED] fd = %u ref_count = %u",
-                 (unsigned int)out_dynamic_list[i].fd, (unsigned int)out_dynamic_list[i].ref_count);
-         close(out_dynamic_list[i].dup_fd);
-         out_dynamic_list[i].dup_fd = -1;
+        if (out_dynamic_list[i].dup_fd > -1) {
+            DEBUG_PRINT_LOW("buf_ref_remove: [REMOVED] fd = %u ref_count = %u",
+                    (unsigned int)out_dynamic_list[i].fd, (unsigned int)out_dynamic_list[i].ref_count);
+            close(out_dynamic_list[i].dup_fd);
+            out_dynamic_list[i].dup_fd = -1;
+        }
     }
     pthread_mutex_unlock(&m_lock);
 
