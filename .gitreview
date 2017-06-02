@@ -1,0 +1,5 @@
+[gerrit]
+host=review.xosp.org
+port=29418
+project=android_hardware_qcom_media.git
+defaultbranch=xosp-n-rebase
